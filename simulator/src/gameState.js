@@ -35,6 +35,8 @@ function shuffleInPlace(arr, rand) {
  * - Scenario start: shuffle a fresh 54-card deck and draw 2 into hand
  * - Flip from deck or hand discards the flipped card(s)
  * - Flipping from hand auto-draws 1 if deck not empty
+ * - IMPORTANT UX: when flipping from hand and auto-drawing, the drawn card replaces
+ *   the flipped slot (so the hand doesn't "shift left" visually).
  * - Players may not draw except:
  *   - scenario start draw(2)
  *   - auto-draw after flipping from hand
@@ -207,16 +209,29 @@ export function createGameState(opts = {}) {
     const autoDrawn = [];
 
     const i = index | 0;
+    let flippedIndex = -1;
+
     if (i >= 0 && i < s.hand.length) {
       const [card] = s.hand.splice(i, 1);
       if (card) {
         flipped.push(card);
         s.discard.push(card);
+        flippedIndex = i;
       }
     }
 
     // Auto-draw exactly 1 if possible.
-    if (s.deck.length > 0) {
+    // IMPORTANT: insert the drawn card back into the same slot that was flipped,
+    // so the remaining cards don't shift left.
+    if (flippedIndex !== -1 && s.deck.length > 0) {
+      const drawn = s.deck.pop();
+      if (drawn) {
+        s.hand.splice(flippedIndex, 0, drawn);
+        autoDrawn.push(drawn);
+      }
+    } else if (flippedIndex === -1 && s.deck.length > 0) {
+      // If nothing was flipped (bad index), preserve prior behavior (draw to end)
+      // though callers shouldn't rely on this.
       const drawn = s.deck.pop();
       if (drawn) {
         s.hand.push(drawn);

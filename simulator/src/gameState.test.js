@@ -39,4 +39,28 @@ describe("gameState scenario start", () => {
     const setSize = new Set(ids).size;
     expect(setSize).toBe(54);
   });
+
+  it("when flipping from hand and auto-drawing, the drawn card replaces the flipped slot", () => {
+    const gs = createGameState({ seed: 1337 });
+
+    const before = gs.snapshot();
+    expect(before.hand).toHaveLength(2);
+    expect(before.deck).toHaveLength(52);
+
+    const rightCardIdBefore = before.hand[1].id;
+
+    // Flip the left card (index 0). Rule: flipped card is discarded, then auto-draw 1.
+    gs.flipFromHand(0);
+
+    const after = gs.snapshot();
+    expect(after.hand).toHaveLength(2);
+    expect(after.deck).toHaveLength(51);
+    expect(after.discard).toHaveLength(1);
+
+    // The right card should stay in the same slot (index 1), meaning we replaced index 0.
+    expect(after.hand[1].id).toBe(rightCardIdBefore);
+
+    // And the new left card should not be the same as the old right card.
+    expect(after.hand[0].id).not.toBe(rightCardIdBefore);
+  });
 });

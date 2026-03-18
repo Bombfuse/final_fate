@@ -27,53 +27,126 @@ import { roundedRectPath, clamp, makeTextStyle } from "./utils.js";
  */
 
 function makeDiscardSprite(w, h) {
-  const g = new PIXI.Graphics();
+  const root = new PIXI.Container();
+
+  // Card back stack (visual pile)
+  const pile = new PIXI.Graphics();
+  root.addChild(pile);
 
   const layers = 4;
   for (let i = layers - 1; i >= 0; i--) {
     const dx = i * 2.5;
     const dy = i * 2.5;
 
-    g.beginFill(0x111827, 0.92);
-    g.lineStyle({ width: 2, color: 0xffffff, alpha: 0.10 });
-    roundedRectPath(g, dx, dy, w, h, 10);
-    g.endFill();
+    pile.beginFill(0x111827, 0.92);
+    pile.lineStyle({ width: 2, color: 0xffffff, alpha: 0.1 });
+    roundedRectPath(pile, dx, dy, w, h, 10);
+    pile.endFill();
 
     const inner = new PIXI.Graphics();
     inner.beginFill(0xf97316, 0.18); // orange accent
     inner.drawRoundedRect(dx + 10, dy + 10, w - 20, h - 20, 10);
     inner.endFill();
-    g.addChild(inner);
+    root.addChild(inner);
   }
 
-  const t = new PIXI.Text(
-    "DISCARD",
+  // Label ABOVE the pile
+  const label = new PIXI.Text(
+    "Discard",
     makeTextStyle({
-      fontSize: 14,
+      fontSize: 13,
       fill: 0xffffff,
       fontWeight: "800",
-      letterSpacing: 1.5,
+      letterSpacing: 0.5,
     }),
   );
-  t.anchor.set(0.5, 0.5);
-  t.position.set(w / 2 + 6, h / 2 + 6);
-  t.alpha = 0.9;
-  g.addChild(t);
+  label.anchor.set(0.5, 1);
+  label.position.set(w / 2 + 6, -6);
+  label.alpha = 0.9;
+  root.addChild(label);
 
-  g.eventMode = "static";
-  g.cursor = "pointer";
-  g.hitArea = new PIXI.Rectangle(0, 0, w + 10, h + 10);
+  // Top card face (last discarded) goes on top of pile
+  const topCardContainer = new PIXI.Container();
+  topCardContainer.position.set(0, 0);
+  root.addChild(topCardContainer);
 
-  return g;
+  // Interaction
+  root.eventMode = "static";
+  root.cursor = "pointer";
+  root.hitArea = new PIXI.Rectangle(0, -28, w + 10, h + 38);
+
+  // Expose subnodes for updates
+  root._ff = { w, h, label, topCardContainer };
+
+  return root;
 }
 
-function formatCardLine(card, idxFromTop) {
+function isRed(card) {
+  return card?.color === "red";
+}
+
+function makeCardFaceSprite(card, w, h) {
   const c = card ?? {};
-  const label = c.isJoker ? "JOKER" : c.label ?? "?";
-  const suit = c.isJoker ? (c.color === "red" ? "(R)" : "(B)") : c.suit ?? "";
-  const color = c.color === "red" ? "R" : "B";
-  const n = idxFromTop + 1;
-  return `${n}. ${label} ${suit} [${color}]`;
+  const g = new PIXI.Graphics();
+
+  // Card face
+  g.beginFill(0xffffff, 0.96);
+  g.lineStyle({ width: 2, color: 0x0b1020, alpha: 0.5 });
+  roundedRectPath(g, 0, 0, w, h, 10);
+  g.endFill();
+
+  const color = isRed(c) ? 0xd61f45 : 0x111827;
+
+  const cornerStyle = makeTextStyle({
+    fontSize: 16,
+    fill: color,
+    fontWeight: "800",
+  });
+
+  const cornerSmall = makeTextStyle({
+    fontSize: 11,
+    fill: color,
+    fontWeight: "800",
+  });
+
+  const label = c.isJoker ? "🃏" : (c.label ?? "?");
+
+  const tl = new PIXI.Text(label, cornerStyle);
+  tl.position.set(10, 8);
+  g.addChild(tl);
+
+  const br = new PIXI.Text(label, cornerStyle);
+  br.anchor.set(1, 1);
+  br.position.set(w - 10, h - 8);
+  g.addChild(br);
+
+  const centerStyle = makeTextStyle({
+    fontSize: c.isJoker ? 30 : 42,
+    fill: color,
+    fontWeight: "900",
+  });
+
+  const centerText = c.isJoker ? "JOKER" : (c.suit ?? "");
+  const center = new PIXI.Text(centerText, centerStyle);
+  center.anchor.set(0.5, 0.5);
+  center.position.set(w / 2, h / 2 + (c.isJoker ? 0 : 2));
+
+  if (c.isJoker) {
+    center.style = cornerSmall;
+    center.text = isRed(c) ? "JOKER (R)" : "JOKER (B)";
+    center.scale.set(2.0, 2.0);
+  }
+
+  g.addChild(center);
+
+  const gloss = new PIXI.Graphics();
+  gloss.beginFill(0xffffff, 0.25);
+  gloss.drawRoundedRect(6, 6, w - 12, h * 0.35, 10);
+  gloss.endFill();
+  gloss.alpha = 0.35;
+  g.addChild(gloss);
+
+  return g;
 }
 
 /**
@@ -112,22 +185,22 @@ function makeBrowserOverlay(size) {
   help.anchor.set(0, 0);
   panel.addChild(help);
 
-  // Scrollable list viewport
+  // Scrollable viewport (cards grid)
   const viewport = new PIXI.Container();
   panel.addChild(viewport);
 
   const viewportMask = new PIXI.Graphics();
   viewport.addChild(viewportMask);
 
-  const listContainer = new PIXI.Container();
-  viewport.addChild(listContainer);
+  const content = new PIXI.Container();
+  viewport.addChild(content);
 
   const emptyText = new PIXI.Text(
     "No discarded cards yet.",
     makeTextStyle({ fontSize: 14, fill: 0xffffff, fontWeight: "700" }),
   );
   emptyText.alpha = 0.9;
-  listContainer.addChild(emptyText);
+  content.addChild(emptyText);
 
   // Close button
   const closeBtn = new PIXI.Container();
@@ -146,15 +219,12 @@ function makeBrowserOverlay(size) {
   closeBtn.eventMode = "static";
   closeBtn.cursor = "pointer";
 
-  // Internal layout state
   const st = {
-    // panel rect
     x: 0,
     y: 0,
     w: 0,
     h: 0,
 
-    // viewport rect (inside panel)
     vx: 0,
     vy: 0,
     vw: 0,
@@ -162,6 +232,12 @@ function makeBrowserOverlay(size) {
 
     scrollY: 0,
     contentH: 0,
+
+    // grid layout
+    cardW: 84,
+    cardH: 120,
+    gap: 12,
+    cols: 1,
   };
 
   function layoutOverlay(newSize) {
@@ -171,8 +247,8 @@ function makeBrowserOverlay(size) {
     dim.endFill();
 
     const pad = 18;
-    const panelW = clamp(Math.floor(newSize.w * 0.6), 360, 720);
-    const panelH = clamp(Math.floor(newSize.h * 0.65), 300, 700);
+    const panelW = clamp(Math.floor(newSize.w * 0.78), 420, 980);
+    const panelH = clamp(Math.floor(newSize.h * 0.72), 320, 820);
 
     st.w = panelW;
     st.h = panelH;
@@ -215,10 +291,14 @@ function makeBrowserOverlay(size) {
     viewportMask.beginFill(0xffffff, 1);
     viewportMask.drawRect(0, 0, st.vw, st.vh);
     viewportMask.endFill();
-    listContainer.mask = viewportMask;
+    content.mask = viewportMask;
 
-    // Also position empty text baseline (actual text updated on render)
-    emptyText.position.set(0, 0);
+    // Card sizing responsive-ish
+    st.cardH = clamp(Math.floor(st.vh * 0.42), 96, 148);
+    st.cardW = Math.floor(st.cardH * 0.7);
+    st.gap = 12;
+
+    st.cols = Math.max(1, Math.floor((st.vw + st.gap) / (st.cardW + st.gap)));
 
     // Clamp current scroll
     setScrollY(st.scrollY);
@@ -227,17 +307,16 @@ function makeBrowserOverlay(size) {
   function setScrollY(y) {
     const maxScroll = Math.max(0, st.contentH - st.vh);
     st.scrollY = clamp(y, 0, maxScroll);
-    listContainer.position.set(0, -st.scrollY);
+    content.position.set(0, -st.scrollY);
   }
 
   /**
-   * Render discard list into overlay.
+   * Render discard cards into overlay as sprites.
    * @param {any[]} cardsTopLast
    */
   function renderList(cardsTopLast) {
-    // Remove all list children except emptyText; easiest is to clear and recreate
-    listContainer.removeChildren();
-    listContainer.addChild(emptyText);
+    content.removeChildren();
+    content.addChild(emptyText);
 
     const cards = Array.isArray(cardsTopLast) ? cardsTopLast : [];
     if (cards.length === 0) {
@@ -248,44 +327,38 @@ function makeBrowserOverlay(size) {
       return;
     }
 
-    // Show top card first (reverse order)
-    const lines = [];
-    for (let i = cards.length - 1; i >= 0; i--) {
-      const idxFromTop = cards.length - 1 - i;
-      lines.push(formatCardLine(cards[i], idxFromTop));
+    // Top card first (reverse order)
+    const ordered = [];
+    for (let i = cards.length - 1; i >= 0; i--) ordered.push(cards[i]);
+
+    // Create a simple card grid
+    let x = 0;
+    let y = 0;
+    let col = 0;
+
+    for (let i = 0; i < ordered.length; i++) {
+      const card = ordered[i];
+      const sprite = makeCardFaceSprite(card, st.cardW, st.cardH);
+      sprite.position.set(x, y);
+      content.addChild(sprite);
+
+      col++;
+      if (col >= st.cols) {
+        col = 0;
+        x = 0;
+        y += st.cardH + st.gap;
+      } else {
+        x += st.cardW + st.gap;
+      }
     }
 
-    const lineStyle = makeTextStyle({
-      fontSize: 13,
-      fill: 0xffffff,
-      fontWeight: "650",
-    });
+    // Content height is last row bottom
+    const rows = Math.ceil(ordered.length / st.cols);
+    st.contentH = rows * st.cardH + Math.max(0, rows - 1) * st.gap;
 
-    const monoStyle = makeTextStyle({
-      fontSize: 12,
-      fill: 0xffffff,
-      fontWeight: "650",
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    });
-
-    // Render as a single Text for perf and simpler layout
-    const txt = new PIXI.Text(lines.join("\n"), monoStyle);
-    txt.alpha = 0.95;
-    txt.position.set(0, 0);
-
-    // If very long, keep it readable with a slightly smaller font.
-    if (cards.length > 60) {
-      txt.style = lineStyle;
-    }
-
-    listContainer.addChild(txt);
-
-    st.contentH = txt.height;
     setScrollY(0);
   }
 
-  // Close behaviors
   function open() {
     overlay.visible = true;
   }
@@ -304,7 +377,6 @@ function makeBrowserOverlay(size) {
   // Scroll handling (wheel)
   overlay.eventMode = "static";
   overlay.on("wheel", (e) => {
-    // Pixi wheel event: e.deltaY in most environments
     const dy = e?.deltaY ?? 0;
     if (!overlay.visible) return;
     if (!Number.isFinite(dy) || dy === 0) return;
@@ -355,6 +427,27 @@ export function createDiscardView(opts) {
   const discardSprite = makeDiscardSprite(spriteSize.w, spriteSize.h);
   layer.addChild(discardSprite);
 
+  function renderTopCard() {
+    const ff = discardSprite?._ff;
+    if (!ff || !ff.topCardContainer) return;
+
+    ff.topCardContainer.removeChildren();
+
+    const topCard = top();
+    if (!topCard) return;
+
+    // Render the last discarded card as the visible top card.
+    // Slight inset so it sits nicely on the pile.
+    const inset = 6;
+    const face = makeCardFaceSprite(
+      topCard,
+      spriteSize.w - inset * 2,
+      spriteSize.h - inset * 2,
+    );
+    face.position.set(inset, inset);
+    ff.topCardContainer.addChild(face);
+  }
+
   let browser = null;
   if (overlayLayer) {
     browser = makeBrowserOverlay(screenSize());
@@ -363,6 +456,7 @@ export function createDiscardView(opts) {
   }
 
   function emitChange() {
+    renderTopCard();
     onChange({ count: discard.length, topCard: top() });
   }
 
