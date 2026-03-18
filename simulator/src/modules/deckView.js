@@ -8,9 +8,11 @@ import { roundedRectPath } from "./utils.js";
  * - Own deck state (array of cards)
  * - Render a clickable deck sprite
  * - Provide draw/shuffle/reset helpers
+ * - Provide "flip" (discard) helpers/integration
  *
- * This module does NOT own hand state. The caller provides an `onDraw(cards)`
- * callback to receive drawn cards.
+ * This module does NOT own hand state. The caller provides:
+ * - `onDraw(cards)` to receive drawn cards
+ * - `onFlip(cards)` to receive flipped (discarded) cards
  *
  * Card shape expectation (same as existing simulator):
  * {
@@ -84,6 +86,7 @@ export function createDeckView(opts) {
     layer,
     deckArea,
     onDraw = () => {},
+    onFlip = () => {},
     onChange = () => {},
     spriteSize = { w: 88, h: 124 },
     spriteTopPadding = 18,
@@ -161,6 +164,32 @@ export function createDeckView(opts) {
   }
 
   /**
+   * Flip (discard) up to `n` cards from the top (end) of the deck.
+   * Calls `onFlip(flipped)` with the flipped cards (in flip order).
+   *
+   * @param {number} n
+   * @returns {any[]} flipped cards
+   */
+  function flip(n = 1) {
+    const want = Math.max(0, n | 0);
+    if (want === 0) return [];
+
+    const flipped = [];
+    for (let i = 0; i < want; i++) {
+      const c = deck.pop();
+      if (!c) break;
+      flipped.push(c);
+    }
+
+    if (flipped.length) {
+      onFlip(flipped);
+      emitChange();
+    }
+
+    return flipped;
+  }
+
+  /**
    * Shuffle in-place using the supplied RNG.
    * RNG signature: ()=>number in [0,1).
    *
@@ -204,6 +233,18 @@ export function createDeckView(opts) {
     deckSprite.on("pointerdown", () => draw(n));
   }
 
+  /**
+   * Attach click handler to flip (discard) cards on click.
+   * This enforces "players may not draw outside of when they flip" at the UI level
+   * by letting the app wire flip to the only click action on the deck sprite.
+   *
+   * @param {number} n
+   */
+  function enableClickToFlip(n = 1) {
+    deckSprite.removeAllListeners?.("pointerdown");
+    deckSprite.on("pointerdown", () => flip(n));
+  }
+
   function destroy() {
     deckSprite.destroy({ children: true });
     deck = [];
@@ -215,12 +256,14 @@ export function createDeckView(opts) {
     getDeck,
     count,
     draw,
+    flip,
     shuffle,
     reset,
 
     // rendering / integration
     layout,
     enableClickToDraw,
+    enableClickToFlip,
     destroy,
 
     // advanced usage

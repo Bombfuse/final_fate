@@ -8,8 +8,10 @@ import { roundedRectPath, makeTextStyle, clamp } from "./utils.js";
  * - Own hand state (array of cards) + selected index
  * - Render the hand into a Pixi container within a given hand area
  * - Handle click-to-select behavior
+ * - Support flipping a card from hand (flip = discard)
  *
  * This module does NOT own deck state. The caller adds cards via `addCards()`.
+ * Flipping rules (auto-draw, reshuffle, etc.) are enforced by the caller via `onFlip`.
  *
  * Card shape expectation (same as existing simulator):
  * {
@@ -47,7 +49,7 @@ function makeCardSprite(card, w, h) {
     fontWeight: "700",
   });
 
-  const label = card?.isJoker ? "🃏" : card?.label ?? "?";
+  const label = card?.isJoker ? "🃏" : (card?.label ?? "?");
 
   const tl = new PIXI.Text(label, style);
   tl.position.set(10, 8);
@@ -64,7 +66,7 @@ function makeCardSprite(card, w, h) {
     fontWeight: "800",
   });
 
-  const centerText = card?.isJoker ? "JOKER" : card?.suit ?? "";
+  const centerText = card?.isJoker ? "JOKER" : (card?.suit ?? "");
   const center = new PIXI.Text(centerText, centerStyle);
   center.anchor.set(0.5, 0.5);
   center.position.set(w / 2, h / 2 + (card?.isJoker ? 0 : 2));
@@ -98,6 +100,7 @@ function makeCardSprite(card, w, h) {
  *  getCardSize: ()=>{cardW:number, cardH:number},
  *  background?: PIXI.DisplayObject|null,
  *  onChange?: (info:{count:number, selectedIndex:number, selectedCard:any|null})=>void,
+ *  onFlip?: (info:{card:any, index:number})=>void,
  *  overlapPx?: number | null,
  *  selectedLiftPx?: number,
  *  bottomPaddingPx?: number,
@@ -110,6 +113,7 @@ export function createHandView(opts) {
     getCardSize,
     background = null,
     onChange = () => {},
+    onFlip = () => {},
     overlapPx = null,
     selectedLiftPx = 14,
     bottomPaddingPx = 16,
@@ -129,7 +133,7 @@ export function createHandView(opts) {
 
   function emitChange() {
     const selectedCard =
-      selectedIndex >= 0 ? hand[selectedIndex] ?? null : null;
+      selectedIndex >= 0 ? (hand[selectedIndex] ?? null) : null;
     onChange({ count: hand.length, selectedIndex, selectedCard });
   }
 
@@ -156,8 +160,7 @@ export function createHandView(opts) {
     const { cardW, cardH } = getCardSize();
 
     const maxVisibleW = area.w - 24;
-    const overlap =
-      overlapPx ?? clamp(Math.floor(cardW * 0.35), 18, 36);
+    const overlap = overlapPx ?? clamp(Math.floor(cardW * 0.35), 18, 36);
 
     const naturalW = n * cardW - (n - 1) * overlap;
     const scale = naturalW > maxVisibleW ? maxVisibleW / naturalW : 1;
@@ -176,7 +179,20 @@ export function createHandView(opts) {
 
       if (idx === selectedIndex) sprite.position.y -= selectedLiftPx;
 
-      sprite.on("pointerdown", () => {
+      sprite.on("pointerdown", (e) => {
+        // Shift-click flips (discard) this card from hand.
+        // Regular click selects/deselects.
+        const isShift = !!(e?.shiftKey ?? e?.data?.originalEvent?.shiftKey);
+        if (isShift) {
+          const card = removeAt(idx);
+          if (card) {
+            onFlip({ card, index: idx });
+            // `removeAt` emits change; we still need to re-layout visuals.
+            layout();
+          }
+          return;
+        }
+
         selectedIndex = idx === selectedIndex ? -1 : idx;
         emitChange();
         layout();
@@ -242,7 +258,7 @@ export function createHandView(opts) {
   }
 
   function getSelectedCard() {
-    return selectedIndex >= 0 ? hand[selectedIndex] ?? null : null;
+    return selectedIndex >= 0 ? (hand[selectedIndex] ?? null) : null;
   }
 
   /**

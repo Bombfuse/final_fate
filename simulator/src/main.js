@@ -1,28 +1,34 @@
 import * as PIXI from "pixi.js";
-import { makeDeck54 } from "./deck.js";
 
 import {
   clamp,
   nowMs,
   drawPanelBackground,
   getHudEl,
-  makeRng,
 } from "./modules/utils.js";
 import { createGrid } from "./modules/grid.js";
 import { createDeckView } from "./modules/deckView.js";
 import { createHandView } from "./modules/handView.js";
+import { createDiscardView } from "./modules/discardView.js";
+
+import { createGameState } from "./gameState.js";
 
 /**
  * Simulator main entry (Vite).
  *
- * Responsibilities (after refactor):
- * - Boot Pixi onto the existing <canvas id="game">
- * - Own global layout (panel rects, sizing)
- * - Compose modules:
- *   - grid (render + hover/tooltip)
- *   - deck (state + render + click-to-draw)
- *   - hand (state + render + click-to-select)
- * - Wire inputs + HUD
+ * Refactor goals:
+ * - Centralize rules + cards in a single game state object (`gameState.js`)
+ * - UI modules become dumb views/controllers:
+ *   - They render based on current game state (deck/hand/discard)
+ *   - They emit user intents (flip-from-deck, flip-from-hand, browse discard)
+ * - `main.js` orchestrates: apply intent -> update game state -> sync views + HUD
+ *
+ * Rules (implemented in gameState):
+ * - Scenario start: shuffle fresh 54 card deck, draw 2 to hand
+ * - Flip from deck or hand discards the flipped card(s)
+ * - Flipping from hand auto-draws 1 if deck not empty
+ * - Players may not draw except scenario-start draw(2) and auto-draw after hand flip
+ * - Reshuffle when deck empty AND hand empty (discard stays as public history)
  */
 
 const GRID_W = 21;
@@ -85,7 +91,9 @@ export async function startSimulator() {
     resizeTo: root,
   });
 
+  // -----------------------------
   // Layers
+  // -----------------------------
   const stageRoot = new PIXI.Container();
   const boardLayer = new PIXI.Container();
   const boardGridLayer = new PIXI.Container();
@@ -98,7 +106,9 @@ export async function startSimulator() {
   boardLayer.addChild(boardGridLayer, boardHoverLayer);
   app.stage.addChild(stageRoot);
 
-  // Panel backgrounds (owned by main; passed into modules when needed)
+  // -----------------------------
+  // Panel backgrounds (owned by main)
+  // -----------------------------
   const deckPanelBg = new PIXI.Graphics();
   const handPanelBg = new PIXI.Graphics();
   const boardPanelBg = new PIXI.Graphics();
@@ -107,7 +117,12 @@ export async function startSimulator() {
   boardLayer.addChildAt(boardPanelBg, 0);
 
   // -----------------------------
-  // Modules
+  // Central game state (single source of truth)
+  // -----------------------------
+  const gs = createGameState();
+
+  // -----------------------------
+  // Modules (views/controllers)
   // -----------------------------
   const grid = createGrid({
     gridW: GRID_W,
@@ -124,42 +139,72 @@ export async function startSimulator() {
     screenSize: () => ({ w: app.screen.width, h: app.screen.height }),
   });
 
+  const discardView = createDiscardView({
+    layer: deckLayer,
+    overlayLayer,
+    deckArea: () => layout.deckArea,
+    screenSize: () => ({ w: app.screen.width, h: app.screen.height }),
+  });
+
+  // Deck view: we use its sprite for click handling + layout.
+  // We do NOT use its internal deck state; it is driven from `gs`.
+  const deckView = createDeckView({
+    layer: deckLayer,
+    deckArea: () => layout.deckArea,
+    onFlip: () => {
+      // Deck click -> flip from deck in game state.
+      gs.flipFromDeck();
+      syncFromGameState();
+    },
+  });
+
+  // Hand view: render from `gs`; use Shift-click flip intent -> `gs.flipFromHand`.
+  // We also use handView for selection display (selected card label).
   const handView = createHandView({
     layer: handLayer,
     handArea: () => layout.handArea,
     getCardSize: () => ({ cardW: layout.cardW, cardH: layout.cardH }),
     background: handPanelBg,
-    onChange: ({ count, selectedCard }) => {
-      updateHud({
-        deckCount: deckView.count(),
-        handCount: count,
-        selectedCardLabel: selectedCard?.label ?? "—",
-      });
+    onChange: () => {
+      // Selection changed; update HUD only (cards come from gs)
+      syncHudOnly();
+    },
+    onFlip: ({ index }) => {
+      gs.flipFromHand(index);
+      syncFromGameState();
     },
   });
 
-  const deckView = createDeckView({
-    layer: deckLayer,
-    deckArea: () => layout.deckArea,
-    onDraw: (cards) => {
-      handView.addCards(cards);
-      handView.layout();
-      updateHud({
-        deckCount: deckView.count(),
-        handCount: handView.count(),
-        selectedCardLabel: handView.getSelectedCard()?.label ?? "—",
-      });
-    },
-    onChange: ({ count }) => {
-      updateHud({
-        deckCount: count,
-        handCount: handView.count(),
-        selectedCardLabel: handView.getSelectedCard()?.label ?? "—",
-      });
-    },
-  });
+  // Enforce deck interaction: click flips, never draws.
+  deckView.enableClickToFlip(1);
 
-  deckView.enableClickToDraw(1);
+  // -----------------------------
+  // Sync helpers
+  // -----------------------------
+  function syncHudOnly() {
+    updateHud({
+      deckCount: gs.deckCount(),
+      handCount: gs.handCount(),
+      selectedCardLabel: handView.getSelectedCard()?.label ?? "—",
+    });
+  }
+
+  function syncFromGameState() {
+    const snap = gs.snapshot();
+
+    // Drive views from state (source of truth)
+    deckView.setDeck(snap.deck);
+    discardView.setDiscard(snap.discard);
+    handView.setHand(snap.hand);
+
+    // Render
+    deckView.layout();
+    discardView.layout();
+    handView.layout();
+
+    // HUD
+    syncHudOnly();
+  }
 
   // -----------------------------
   // Layout
@@ -208,8 +253,7 @@ export async function startSimulator() {
 
     layout.hexSize = clamp(Math.floor(Math.min(sizeByW, sizeByH)), 10, 28);
 
-    // Compute grid origin to center within board area.
-    // We use the same offset->pixel math (mirrors previous code) but inline to keep main as layout owner.
+    // Compute grid origin to center within board area (pointy-top odd-r offset)
     const offsetToPixel = (col, row, size) => {
       const hexW = Math.sqrt(3) * size;
       const hexH = 2 * size;
@@ -261,31 +305,24 @@ export async function startSimulator() {
       layout.boardArea.h,
     );
 
+    // Views that depend on rects
     deckView.layout();
+    discardView.layout();
     grid.rebuild();
     handView.layout();
   }
 
   // -----------------------------
-  // Game reset
+  // Scenario start / reshuffle
   // -----------------------------
-  function resetGame() {
-    const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-    const rand = makeRng(seed);
-
-    handView.clear();
-    deckView.reset({ makeDeck: makeDeck54, rand });
-
-    // Draw 2 on start (same behavior as before)
-    deckView.draw(2);
-    handView.layout();
-
-    updateHud({
-      deckCount: deckView.count(),
-      handCount: handView.count(),
-      selectedCardLabel: handView.getSelectedCard()?.label ?? "—",
-    });
+  function startNewScenario() {
+    // Preserve discard pile as public history by design.
+    gs.restartScenario();
+    syncFromGameState();
   }
+
+  // Initial sync
+  syncFromGameState();
 
   // -----------------------------
   // Input wiring
@@ -304,7 +341,14 @@ export async function startSimulator() {
   window.addEventListener("resize", onResize, { passive: true });
 
   rebuildLayout();
-  resetGame();
+
+  // If `createGameState()` ever starts empty in the future,
+  // this ensures we have a valid scenario.
+  if (gs.deckCount() === 0 && gs.handCount() === 0) {
+    startNewScenario();
+  } else {
+    syncFromGameState();
+  }
 
   // Ambient hover pulse (main drives alpha; grid owns drawing)
   let t0 = nowMs();
