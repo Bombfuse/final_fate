@@ -14,6 +14,9 @@
                 --panel-border: rgba(255, 255, 255, 0.12);
                 --text: rgba(255, 255, 255, 0.92);
                 --muted: rgba(255, 255, 255, 0.65);
+
+                --accent: rgba(103, 232, 249, 0.9);
+                --accent-soft: rgba(103, 232, 249, 0.18);
             }
 
             * {
@@ -58,6 +61,127 @@
                 width: 100%;
                 height: 100%;
                 display: block;
+            }
+
+            /* Editor panel (bottom-left) */
+            .editor {
+                position: absolute;
+                left: 12px;
+                bottom: 12px;
+                width: min(320px, calc(100vw - 24px));
+                height: 240px;
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
+                border-radius: 14px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                z-index: 5;
+                pointer-events: auto;
+            }
+
+            .editor__titlebar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 12px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            }
+
+            .editor__title {
+                font-size: 12px;
+                font-weight: 750;
+                letter-spacing: 0.2px;
+                color: var(--text);
+                opacity: 0.95;
+            }
+
+            .editor__hint {
+                font-size: 11px;
+                color: var(--muted);
+                opacity: 0.95;
+            }
+
+            .editor__tabs {
+                display: flex;
+                gap: 8px;
+                padding: 10px 12px 8px 12px;
+            }
+
+            .editor__tab {
+                appearance: none;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.05);
+                color: var(--text);
+                border-radius: 999px;
+                padding: 7px 10px;
+                font-size: 12px;
+                font-weight: 700;
+                cursor: pointer;
+            }
+
+            .editor__tab[aria-selected="true"] {
+                border-color: rgba(103, 232, 249, 0.55);
+                background: var(--accent-soft);
+                color: rgba(255, 255, 255, 0.96);
+            }
+
+            .editor__body {
+                padding: 8px 12px 12px 12px;
+                overflow: auto;
+                flex: 1;
+            }
+
+            .palette {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
+            .palette__tile {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                padding: 10px 10px;
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.04);
+                cursor: grab;
+            }
+
+            .palette__tile:active {
+                cursor: grabbing;
+            }
+
+            .palette__name {
+                font-size: 12px;
+                font-weight: 750;
+                color: rgba(255, 255, 255, 0.95);
+                line-height: 1.1;
+            }
+
+            .palette__meta {
+                font-size: 11px;
+                color: var(--muted);
+                opacity: 0.9;
+            }
+
+            .palette__badge {
+                font-size: 11px;
+                font-weight: 800;
+                padding: 4px 8px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.92);
+                white-space: nowrap;
+            }
+
+            .editor [hidden] {
+                display: none !important;
             }
 
             .hud {
@@ -132,6 +256,92 @@
     <body>
         <div id="app">
             <canvas id="game" aria-label="Simulator canvas"></canvas>
+
+            <!-- Editor palette (drag tiles onto the grid) -->
+            <div class="editor" id="editor" aria-label="Editor">
+                <div class="editor__titlebar">
+                    <div class="editor__title">Edit</div>
+                    <div class="editor__hint">Drag onto grid</div>
+                </div>
+
+                <div
+                    class="editor__tabs"
+                    role="tablist"
+                    aria-label="Editor tabs"
+                >
+                    <button
+                        class="editor__tab"
+                        id="editorTabUnits"
+                        type="button"
+                        role="tab"
+                        aria-selected="true"
+                        aria-controls="editorPanelUnits"
+                    >
+                        Units
+                    </button>
+                    <button
+                        class="editor__tab"
+                        id="editorTabItems"
+                        type="button"
+                        role="tab"
+                        aria-selected="false"
+                        aria-controls="editorPanelItems"
+                    >
+                        Items
+                    </button>
+                </div>
+
+                <div class="editor__body">
+                    <div
+                        id="editorPanelUnits"
+                        role="tabpanel"
+                        aria-labelledby="editorTabUnits"
+                    >
+                        <div class="palette" aria-label="Units palette">
+                            <div
+                                class="palette__tile"
+                                draggable="true"
+                                data-palette-kind="unit"
+                                data-palette-id="gilly"
+                                data-palette-label="Gilly"
+                                aria-label="Unit: Gilly"
+                            >
+                                <div>
+                                    <div class="palette__name">Gilly</div>
+                                    <div class="palette__meta">Unit</div>
+                                </div>
+                                <div class="palette__badge">UNIT</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div
+                        id="editorPanelItems"
+                        role="tabpanel"
+                        aria-labelledby="editorTabItems"
+                        hidden
+                    >
+                        <div class="palette" aria-label="Items palette">
+                            <div
+                                class="palette__tile"
+                                draggable="true"
+                                data-palette-kind="item"
+                                data-palette-id="baseball-bat"
+                                data-palette-label="Baseball Bat"
+                                aria-label="Item: Baseball Bat"
+                            >
+                                <div>
+                                    <div class="palette__name">
+                                        Baseball Bat
+                                    </div>
+                                    <div class="palette__meta">Item</div>
+                                </div>
+                                <div class="palette__badge">ITEM</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <div class="hud" aria-hidden="true">
                 <div class="chip" id="help">

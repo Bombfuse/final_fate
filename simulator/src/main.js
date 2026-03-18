@@ -10,6 +10,10 @@ import { createGrid } from "./modules/grid.js";
 import { createDeckView } from "./modules/deckView.js";
 import { createHandView } from "./modules/handView.js";
 import { createDiscardView } from "./modules/discardView.js";
+import {
+  createEditorPalette,
+  readPalettePayloadFromDataTransfer,
+} from "./modules/editorPalette.js";
 
 import { createGameState } from "./gameState.js";
 
@@ -120,6 +124,12 @@ export async function startSimulator() {
   // Central game state (single source of truth)
   // -----------------------------
   const gs = createGameState();
+
+  // -----------------------------
+  // Editor palette (DOM)
+  // -----------------------------
+  const editor = createEditorPalette();
+  editor.init();
 
   // -----------------------------
   // Modules (views/controllers)
@@ -332,6 +342,38 @@ export async function startSimulator() {
 
   app.stage.on("pointermove", (e) => {
     grid.onPointerMove(e.global);
+  });
+
+  // -----------------------------
+  // DOM drag-drop onto the Pixi grid (canvas)
+  // -----------------------------
+  // We bind to the `<canvas>` element because native drag events are DOM-based.
+  // Convert DOM event coordinates -> Pixi global coords and delegate to the grid.
+  canvas.addEventListener("dragover", (e) => {
+    const payload = readPalettePayloadFromDataTransfer(e.dataTransfer);
+    if (!payload) return;
+
+    // Allow drop
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+
+  canvas.addEventListener("drop", (e) => {
+    const payload = readPalettePayloadFromDataTransfer(e.dataTransfer);
+    if (!payload) return;
+
+    e.preventDefault();
+
+    const rect = canvas.getBoundingClientRect();
+    const xCss = e.clientX - rect.left;
+    const yCss = e.clientY - rect.top;
+
+    // Pixi uses physical pixels in `app.screen` when `autoDensity` is enabled.
+    const sx = app.screen.width / rect.width;
+    const sy = app.screen.height / rect.height;
+
+    const globalPoint = { x: xCss * sx, y: yCss * sy };
+    grid.dropPalettePayloadAt(globalPoint, payload);
   });
 
   // -----------------------------

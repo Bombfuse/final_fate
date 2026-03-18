@@ -6,6 +6,9 @@ import {
   makeTextStyle,
 } from "./utils.js";
 
+const PERSON_ICON = "👤";
+const ITEM_ICON = "🎒";
+
 /**
  * Grid module
  *
@@ -14,6 +17,7 @@ import {
  * - Build + render a pointy-top odd-r offset hex grid
  * - Maintain tile geometry for hit-testing
  * - Render hover highlight + optional tile tooltip
+ * - Optional per-tile payload + overlay icons (unit/item)
  *
  * This module does not own "game state" (deck/hand/etc). It owns grid-specific
  * render state and exposes a small API to integrate with the simulator loop.
@@ -82,6 +86,7 @@ export function createGrid(opts) {
       w: gridLayer?.parent?.renderer?.width ?? 0,
       h: gridLayer?.parent?.renderer?.height ?? 0,
     }),
+    onDropPayload = null,
   } = opts;
 
   if (!gridLayer) throw new Error("createGrid: missing `gridLayer`");
@@ -95,11 +100,31 @@ export function createGrid(opts) {
   const hoverHexGfx = new PIXI.Graphics();
   hoverLayer.addChild(hoverHexGfx);
 
+  // Icon overlay (units/items) lives above the grid but below hover.
+  const iconLayer = new PIXI.Container();
+  hoverLayer.addChildAt(iconLayer, 0);
+
   /** @type {HexTile[]} */
   let hexes = [];
 
   /** @type {HexTile|null} */
   let hoveredHex = null;
+
+  /**
+   * Per-tile associated data (set by drag+drop).
+   * Key: "col,row"
+   * Value: { unit?:{id,label}, item?:{id,label} }
+   * @type {Map<string, {unit?:{id:string,label:string}, item?:{id:string,label:string}}>}
+   */
+  const tileData = new Map();
+
+  /**
+   * Per-tile icon sprites.
+   * Key: "col,row"
+   * Value: { unit?:PIXI.Text, item?:PIXI.Text }
+   * @type {Map<string, {unit?:PIXI.Text, item?:PIXI.Text}>}
+   */
+  const tileIcons = new Map();
 
   // Optional tooltip that follows the mouse.
   let tileDetails = null;
@@ -114,7 +139,10 @@ export function createGrid(opts) {
     tileDetailsBg = new PIXI.Graphics();
     tileDetails.addChild(tileDetailsBg);
 
-    tileDetailsText = new PIXI.Text("", makeTextStyle({ fontSize: 12, fill: 0xffffff, fontWeight: "700" }));
+    tileDetailsText = new PIXI.Text(
+      "",
+      makeTextStyle({ fontSize: 12, fill: 0xffffff, fontWeight: "700" }),
+    );
     tileDetailsText.anchor.set(0, 0);
     tileDetailsText.position.set(8, 6);
     tileDetails.addChild(tileDetailsText);
@@ -133,6 +161,9 @@ export function createGrid(opts) {
 
     // Axis labels are children; `clear()` won't remove them, so we do:
     gridGfx.removeChildren();
+
+    // Re-layout icon positions for new origin/size
+    iconLayer.removeChildren();
 
     const axisLabelStyle = makeTextStyle({
       fontSize: Math.max(10, Math.floor(tileSize * 0.55)),
@@ -155,11 +186,28 @@ export function createGrid(opts) {
 
         gridGfx.beginFill(0x0ea5e9, 0.06);
         gridGfx.moveTo(pts[0], pts[1]);
-        for (let i = 2; i < pts.length; i += 2) gridGfx.lineTo(pts[i], pts[i + 1]);
+        for (let i = 2; i < pts.length; i += 2)
+          gridGfx.lineTo(pts[i], pts[i + 1]);
         gridGfx.lineTo(pts[0], pts[1]);
         gridGfx.endFill();
 
         hexes.push({ col, row, cx, cy, pts });
+
+        // If we already have icons/data for this tile, re-add them at new position.
+        const key = `${col},${row}`;
+        const icons = tileIcons.get(key);
+        if (icons?.unit) iconLayer.addChild(icons.unit);
+        if (icons?.item) iconLayer.addChild(icons.item);
+
+        if (icons?.unit) {
+          icons.unit.position.set(cx, cy - Math.floor(layout.hexSize * 0.05));
+        }
+        if (icons?.item) {
+          icons.item.position.set(
+            cx + Math.floor(layout.hexSize * 0.42),
+            cy + Math.floor(layout.hexSize * 0.15),
+          );
+        }
       }
     }
 
@@ -206,7 +254,8 @@ export function createGrid(opts) {
     hoverHexGfx.beginFill(0x67e8f9, 0.12);
     hoverHexGfx.lineStyle({ width: 2, color: 0x67e8f9, alpha: 0.65 });
     hoverHexGfx.moveTo(pts[0], pts[1]);
-    for (let i = 2; i < pts.length; i += 2) hoverHexGfx.lineTo(pts[i], pts[i + 1]);
+    for (let i = 2; i < pts.length; i += 2)
+      hoverHexGfx.lineTo(pts[i], pts[i + 1]);
     hoverHexGfx.lineTo(pts[0], pts[1]);
     hoverHexGfx.endFill();
   }
@@ -291,7 +340,15 @@ export function createGrid(opts) {
     }
 
     if (hoveredHex) {
+      const key = `${hoveredHex.col},${hoveredHex.row}`;
+      const d = tileData.get(key);
+      const extra =
+        d?.unit?.label || d?.item?.label
+          ? `\n${d?.unit?.label ? `Unit: ${d.unit.label}` : ""}${d?.unit?.label && d?.item?.label ? "\n" : ""}${d?.item?.label ? `Item: ${d.item.label}` : ""}`
+          : "";
       showTileDetailsAt(p.x, p.y, hoveredHex.col, hoveredHex.row);
+      if (tileDetailsText)
+        tileDetailsText.text = `${tileToLabel(hoveredHex.col, hoveredHex.row)}${extra}`;
     } else {
       hideTileDetails();
     }
@@ -314,10 +371,103 @@ export function createGrid(opts) {
     hoverHexGfx.alpha = a;
   }
 
+  /**
+   * Associate a unit or item with a tile and ensure icons render.
+   *
+   * @param {{col:number,row:number}} tile
+   * @param {{kind:"unit"|"item", id:string, label:string}} payload
+   */
+  function setTilePayload(tile, payload) {
+    const layout = getLayout();
+    const key = `${tile.col},${tile.row}`;
+    const prev = tileData.get(key) || {};
+
+    if (payload.kind === "unit") {
+      prev.unit = { id: payload.id, label: payload.label };
+    } else {
+      prev.item = { id: payload.id, label: payload.label };
+    }
+    tileData.set(key, prev);
+
+    const hex = hexes.find((h) => h.col === tile.col && h.row === tile.row);
+    const cx = hex?.cx ?? 0;
+    const cy = hex?.cy ?? 0;
+
+    const icons = tileIcons.get(key) || {};
+    const iconStyle = makeTextStyle({
+      fontSize: Math.max(12, Math.floor(layout.hexSize * 0.95)),
+      fill: 0xffffff,
+      fontWeight: "800",
+      stroke: 0x0b1020,
+      strokeThickness: 4,
+      align: "center",
+    });
+
+    if (payload.kind === "unit") {
+      if (!icons.unit) {
+        icons.unit = new PIXI.Text(PERSON_ICON, iconStyle);
+        icons.unit.anchor.set(0.5, 0.5);
+      }
+      icons.unit.position.set(cx, cy - Math.floor(layout.hexSize * 0.05));
+      if (!icons.unit.parent) iconLayer.addChild(icons.unit);
+    } else {
+      if (!icons.item) {
+        icons.item = new PIXI.Text(ITEM_ICON, iconStyle);
+        icons.item.anchor.set(0.5, 0.5);
+      }
+      icons.item.position.set(
+        cx + Math.floor(layout.hexSize * 0.42),
+        cy + Math.floor(layout.hexSize * 0.15),
+      );
+      if (!icons.item.parent) iconLayer.addChild(icons.item);
+    }
+
+    tileIcons.set(key, icons);
+  }
+
+  /**
+   * Find which tile contains a point (global screen coords).
+   * @param {{x:number,y:number}} globalPoint
+   * @returns {HexTile|null}
+   */
+  function getHexAtPoint(globalPoint) {
+    const layout = getLayout();
+    const p = globalPoint;
+    const b = layout.boardArea;
+    if (p.x < b.x || p.x > b.x + b.w || p.y < b.y || p.y > b.y + b.h) {
+      return null;
+    }
+    for (const h of hexes) {
+      if (pointInPoly(p.x, p.y, h.pts)) return h;
+    }
+    return null;
+  }
+
+  /**
+   * Drop integration for DOM drag+drop.
+   * Call this from your canvas `drop` handler.
+   *
+   * @param {{x:number,y:number}} globalPoint
+   * @param {{kind:"unit"|"item", id:string, label:string}} payload
+   * @returns {boolean} whether a tile was updated
+   */
+  function dropPalettePayloadAt(globalPoint, payload) {
+    const h = getHexAtPoint(globalPoint);
+    if (!h) return false;
+    setTilePayload({ col: h.col, row: h.row }, payload);
+    if (typeof onDropPayload === "function") {
+      onDropPayload({ col: h.col, row: h.row }, payload);
+    }
+    return true;
+  }
+
   function destroy() {
     gridGfx.destroy({ children: true });
     hoverHexGfx.destroy({ children: true });
+    iconLayer.destroy({ children: true });
     if (tileDetails) tileDetails.destroy({ children: true });
+    tileData.clear();
+    tileIcons.clear();
     hexes = [];
     hoveredHex = null;
   }
@@ -327,8 +477,11 @@ export function createGrid(opts) {
     onPointerMove,
     getHoveredHex,
     setHoverAlpha,
+    dropPalettePayloadAt,
+    setTilePayload,
     destroy,
     // expose for debugging/advanced uses
     _getHexes: () => hexes,
+    _getTileData: () => tileData,
   };
 }
