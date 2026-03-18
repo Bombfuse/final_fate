@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1, viewport-fit=cover"
+        />
+        <title>Simulator</title>
+        <style>
+            :root {
+                --bg: #0b1020;
+                --panel: rgba(16, 22, 44, 0.85);
+                --panel-border: rgba(255, 255, 255, 0.12);
+                --text: rgba(255, 255, 255, 0.92);
+                --muted: rgba(255, 255, 255, 0.65);
+            }
+
+            * {
+                box-sizing: border-box;
+                user-select: none;
+            }
+
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background: radial-gradient(
+                    1200px 600px at 50% 0%,
+                    #121a35,
+                    var(--bg)
+                );
+                color: var(--text);
+                font-family:
+                    ui-sans-serif,
+                    system-ui,
+                    -apple-system,
+                    Segoe UI,
+                    Roboto,
+                    Helvetica,
+                    Arial,
+                    "Apple Color Emoji",
+                    "Segoe UI Emoji";
+            }
+
+            #app {
+                position: relative;
+                width: 100%;
+                height: 100%;
+            }
+
+            canvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                display: block;
+            }
+
+            .hud {
+                position: absolute;
+                inset: 0;
+                pointer-events: none;
+            }
+
+            .hud .chip {
+                pointer-events: none;
+                position: absolute;
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
+                border-radius: 12px;
+                padding: 10px 12px;
+                backdrop-filter: blur(8px);
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+            }
+
+            #help {
+                left: 12px;
+                top: 12px;
+                max-width: 420px;
+                font-size: 12px;
+                line-height: 1.35;
+                color: var(--muted);
+            }
+
+            #help b {
+                color: var(--text);
+                font-weight: 650;
+            }
+
+            #status {
+                right: 12px;
+                top: 12px;
+                max-width: 420px;
+                font-size: 12px;
+                line-height: 1.35;
+                color: var(--muted);
+                text-align: right;
+            }
+
+            #status .row {
+                display: flex;
+                gap: 10px;
+                justify-content: flex-end;
+                align-items: baseline;
+            }
+
+            #status .label {
+                opacity: 0.85;
+            }
+
+            #status .value {
+                font-weight: 650;
+                color: var(--text);
+            }
+
+            /* If JS is disabled, show a notice. */
+            noscript {
+                position: absolute;
+                inset: auto 12px 12px 12px;
+                background: rgba(0, 0, 0, 0.5);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+                padding: 10px 12px;
+            }
+        </style>
+      <script type="module" crossorigin src="/assets/index-BxFOh-h9.js"></script>
+    </head>
+
+    <body>
+        <div id="app">
+            <canvas id="game" aria-label="Simulator canvas"></canvas>
+
+            <div class="hud" aria-hidden="true">
+                <div class="chip" id="help">
+                    <div><b>Simulator</b> prototype</div>
+                    <div>
+                        Center: <b>21×21 hex grid</b>. Left: <b>54</b>-card
+                        poker deck. Bottom (foreground): <b>player hand</b>.
+                    </div>
+                    <div style="margin-top: 6px">
+                        Controls: <b>Click deck</b> to draw (if any left),
+                        <b>click a card in hand</b> to select,
+                        <b>hover grid</b> highlights hex.
+                    </div>
+                </div>
+
+                <div class="chip" id="status">
+                    <div class="row">
+                        <span class="label">Deck:</span>
+                        <span class="value" id="deckCount">—</span>
+                    </div>
+                    <div class="row">
+                        <span class="label">Hand:</span>
+                        <span class="value" id="handCount">—</span>
+                    </div>
+                    <div class="row">
+                        <span class="label">Selected:</span>
+                        <span class="value" id="selectedCard">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <noscript>This app requires JavaScript to run.</noscript>
+        </div>
+
+        <!-- Vite entry (ESM) -->
+    </body>
+</html>
