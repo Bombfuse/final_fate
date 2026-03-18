@@ -1,6 +1,21 @@
 import * as PIXI from "pixi.js";
 import { makeDeck54 } from "./deck.js";
 
+function colToLabel(col) {
+  // Columns A-Z (cap at Z)
+  const code = "A".charCodeAt(0) + Math.max(0, Math.min(25, col));
+  return String.fromCharCode(code);
+}
+
+function rowToLabel(row) {
+  // Rows 1-100 (cap at 100)
+  return String(Math.max(1, Math.min(100, row + 1)));
+}
+
+function tileToLabel(col, row) {
+  return `${colToLabel(col)}${rowToLabel(row)}`;
+}
+
 /**
  * Simulator main entry (Vite).
  *
@@ -314,6 +329,25 @@ export async function startSimulator() {
   const hoverHexGfx = new PIXI.Graphics();
   boardHoverLayer.addChild(hoverHexGfx);
 
+  // Tile details popup (follows mouse while hovering a tile)
+  const tileDetails = new PIXI.Container();
+  tileDetails.visible = false;
+  overlayLayer.addChild(tileDetails);
+
+  const tileDetailsBg = new PIXI.Graphics();
+  tileDetails.addChild(tileDetailsBg);
+
+  const tileDetailsText = new PIXI.Text("", {
+    fontFamily:
+      "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    fontSize: 12,
+    fill: 0xffffff,
+    fontWeight: "700",
+  });
+  tileDetailsText.anchor.set(0, 0);
+  tileDetailsText.position.set(8, 6);
+  tileDetails.addChild(tileDetailsText);
+
   // Deck sprite
   const deckSprite = makeDeckSprite(88, 124);
   deckLayer.addChild(deckSprite);
@@ -421,12 +455,33 @@ export async function startSimulator() {
     // Contrast vs background
     gridGfx.lineStyle({ width: 1.5, color: 0x22d3ee, alpha: 0.35 });
 
+    const tileSize = Math.max(1, layout.hexSize - 0.5);
+
+    // Recreate axis label layers each rebuild so they track resizing/centering.
+    // (We attach them under `gridGfx` so `gridGfx.clear()` doesn't remove them; `clear()`
+    // only clears drawn geometry, not children, so we explicitly remove children here.)
+    gridGfx.removeChildren();
+
+    const axisLabelStyle = new PIXI.TextStyle({
+      fontFamily:
+        "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      fontSize: Math.max(10, Math.floor(tileSize * 0.55)),
+      fill: 0xffffff,
+      fontWeight: "800",
+      align: "center",
+      stroke: 0x0b1020,
+      strokeThickness: 3,
+    });
+
+    // Draw tiles + store geometry
     for (let row = 0; row < GRID_H; row++) {
       for (let col = 0; col < GRID_W; col++) {
         const p = offsetToPixel(col, row, layout.hexSize);
         const cx = layout.gridOriginX + p.x;
         const cy = layout.gridOriginY + p.y;
-        const pts = hexPolygonPoints(cx, cy, layout.hexSize);
+
+        // Render tiles slightly smaller than their spacing to create a ~1px gap between neighbors.
+        const pts = hexPolygonPoints(cx, cy, tileSize);
 
         gridGfx.beginFill(0x0ea5e9, 0.06);
         gridGfx.moveTo(pts[0], pts[1]);
@@ -437,6 +492,37 @@ export async function startSimulator() {
 
         state.hexes.push({ col, row, cx, cy, pts });
       }
+    }
+
+    // Axis labels: columns on top, rows on left
+    // Use existing computed hex centers so labels align with the first row/col.
+    const topRow = 0;
+    const leftCol = 0;
+
+    // Top labels (A..)
+    for (let col = 0; col < GRID_W; col++) {
+      const p = offsetToPixel(col, topRow, layout.hexSize);
+      const cx = layout.gridOriginX + p.x;
+      const cy = layout.gridOriginY + p.y;
+
+      const t = new PIXI.Text(colToLabel(col), axisLabelStyle);
+      t.anchor.set(0.5, 1);
+      t.position.set(cx, cy - tileSize - 4);
+      t.alpha = 0.85;
+      gridGfx.addChild(t);
+    }
+
+    // Left labels (1..)
+    for (let row = 0; row < GRID_H; row++) {
+      const p = offsetToPixel(leftCol, row, layout.hexSize);
+      const cx = layout.gridOriginX + p.x;
+      const cy = layout.gridOriginY + p.y;
+
+      const t = new PIXI.Text(rowToLabel(row), axisLabelStyle);
+      t.anchor.set(1, 0.5);
+      t.position.set(cx - tileSize - 6, cy);
+      t.alpha = 0.85;
+      gridGfx.addChild(t);
     }
   }
 
@@ -497,6 +583,46 @@ export async function startSimulator() {
     hoverHexGfx.endFill();
   }
 
+  function hideTileDetails() {
+    tileDetails.visible = false;
+  }
+
+  function showTileDetailsAt(screenX, screenY, col, row) {
+    tileDetailsText.text = tileToLabel(col, row);
+
+    // Layout background around text
+    const padX = 8;
+    const padY = 6;
+    const w = Math.max(40, tileDetailsText.width + padX * 2);
+    const h = Math.max(24, tileDetailsText.height + padY * 2);
+
+    tileDetailsBg.clear();
+    tileDetailsBg.beginFill(0x0b1020, 0.85);
+    tileDetailsBg.lineStyle({ width: 1, color: 0xffffff, alpha: 0.16 });
+    tileDetailsBg.drawRoundedRect(0, 0, w, h, 8);
+    tileDetailsBg.endFill();
+
+    // Keep text positioned inside padding (in case width changed)
+    tileDetailsText.position.set(padX, padY);
+
+    // Follow mouse with a small offset, clamped to screen bounds
+    const offsetX = 14;
+    const offsetY = 14;
+
+    const margin = 8;
+    const x = Math.max(
+      margin,
+      Math.min(app.screen.width - w - margin, screenX + offsetX),
+    );
+    const y = Math.max(
+      margin,
+      Math.min(app.screen.height - h - margin, screenY + offsetY),
+    );
+
+    tileDetails.position.set(x, y);
+    tileDetails.visible = true;
+  }
+
   function drawCardToHand(count) {
     for (let i = 0; i < count; i++) {
       const c = state.deck.pop();
@@ -520,6 +646,7 @@ export async function startSimulator() {
     updateHud();
     layoutHand();
     drawHoverHex();
+    hideTileDetails();
   }
 
   // Input
@@ -539,6 +666,7 @@ export async function startSimulator() {
       if (state.hoveredHex) {
         state.hoveredHex = null;
         drawHoverHex();
+        hideTileDetails();
       }
       return;
     }
@@ -562,6 +690,12 @@ export async function startSimulator() {
     if (changed) {
       state.hoveredHex = found;
       drawHoverHex();
+    }
+
+    if (state.hoveredHex) {
+      showTileDetailsAt(p.x, p.y, state.hoveredHex.col, state.hoveredHex.row);
+    } else {
+      hideTileDetails();
     }
   });
 
