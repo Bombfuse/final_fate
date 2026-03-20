@@ -30,16 +30,35 @@ pub struct GridRow {
 }
 
 /// The occupant placed on a tile (if any).
+///
+/// A unit placement can optionally be tagged as NPB (non-player-behavior),
+/// meaning it should follow AI/behavior rules defined for that unit in the DB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileOccupant {
-    Unit(i64),
+    Unit(UnitPlacement),
     Item(i64),
+}
+
+/// Per-tile unit placement attributes.
+///
+/// This is intentionally *placement* data (belongs to a scenario/grid tile),
+/// not intrinsic unit data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnitPlacement {
+    pub unit_id: i64,
+    pub is_npb: bool,
+}
+
+impl UnitPlacement {
+    pub const fn new(unit_id: i64, is_npb: bool) -> Self {
+        Self { unit_id, is_npb }
+    }
 }
 
 impl TileOccupant {
     pub fn unit_id(self) -> Option<i64> {
         match self {
-            TileOccupant::Unit(id) => Some(id),
+            TileOccupant::Unit(p) => Some(p.unit_id),
             _ => None,
         }
     }
@@ -47,6 +66,13 @@ impl TileOccupant {
     pub fn item_id(self) -> Option<i64> {
         match self {
             TileOccupant::Item(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn unit_is_npb(self) -> Option<bool> {
+        match self {
+            TileOccupant::Unit(p) => Some(p.is_npb),
             _ => None,
         }
     }
@@ -86,6 +112,9 @@ impl GridTileRow {
     ///
     /// If both are non-null, the DB CHECK constraint should prevent that; if it happens anyway,
     /// callers should treat it as invalid data.
+    ///
+    /// `unit_is_npb` is only meaningful when `unit_id` is not NULL; callers should pass `false`
+    /// (or the DB default) when there is no unit on the tile.
     pub fn from_nullable_occupant(
         id: i64,
         grid_id: i64,
@@ -93,11 +122,12 @@ impl GridTileRow {
         r: i32,
         unit_id: Option<i64>,
         item_id: Option<i64>,
+        unit_is_npb: bool,
         created_at: String,
         updated_at: String,
     ) -> Self {
         let occupant = match (unit_id, item_id) {
-            (Some(uid), None) => Some(TileOccupant::Unit(uid)),
+            (Some(uid), None) => Some(TileOccupant::Unit(UnitPlacement::new(uid, unit_is_npb))),
             (None, Some(iid)) => Some(TileOccupant::Item(iid)),
             _ => None,
         };

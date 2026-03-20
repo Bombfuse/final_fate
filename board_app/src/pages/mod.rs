@@ -7,8 +7,8 @@ pub mod empty;
 pub mod item_edit;
 pub mod level_edit;
 pub mod scenario_edit;
+pub mod simulation;
 pub mod unit_edit;
 
 // Future pages:
 // pub mod main_menu;
-// pub mod simulation;

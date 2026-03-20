@@ -17,6 +17,7 @@ use pages::action_edit::ActionUiState;
 use pages::item_edit::ItemUiState;
 use pages::level_edit::LevelUiState;
 use pages::scenario_edit::ScenarioUiState;
+use pages::simulation::SimulationUiState;
 use pages::unit_edit::UnitUiState;
 
 fn main() {
@@ -105,6 +106,7 @@ fn setup_camera(mut commands: Commands) {
     commands.insert_resource(LevelUiState::default());
     commands.insert_resource(ActionUiState::default());
     commands.insert_resource(ScenarioUiState::default());
+    commands.insert_resource(SimulationUiState::default());
 }
 
 /// Boots up and makes a connection to SQLite immediately.
@@ -213,6 +215,7 @@ fn ui_router_system(
     mut level_ui: ResMut<LevelUiState>,
     mut action_ui: ResMut<ActionUiState>,
     mut scenario_ui: ResMut<ScenarioUiState>,
+    mut simulation_ui: ResMut<SimulationUiState>,
 ) {
     // Top-left main panel for pages
     egui::TopBottomPanel::top("top_bar").show(contexts.ctx_mut(), |ui| {
@@ -298,7 +301,7 @@ fn ui_router_system(
             pages::action_edit::render(ui, &mut route, db.as_deref(), action_ui.as_mut());
         }
         Route::Simulation => {
-            pages::empty::render(ui, &mut route, "Simulation");
+            pages::simulation::render(ui, &mut route, db.as_deref(), simulation_ui.as_mut());
         }
     });
 }

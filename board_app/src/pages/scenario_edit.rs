@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use rusqlite::params;
 
 use crate::models::action::NamedId;
-use crate::models::scenario::{AxialCoord, EditableGrid, TileOccupant};
+use crate::models::scenario::{AxialCoord, EditableGrid, TileOccupant, UnitPlacement};
 use crate::{AppRoute, DbState, Route};
 
 /// Scenario Editor UI state.
@@ -34,6 +34,10 @@ pub struct ScenarioUiState {
     pub selected_tile: Option<AxialCoord>,
     pub paint_mode: PaintMode,
 
+    // Drag-and-drop state (tile occupant move)
+    pub drag_from_tile: Option<AxialCoord>,
+    pub drag_payload: Option<TileOccupant>,
+
     // Place occupant controls
     pub selected_unit_id: Option<i64>,
     pub selected_item_id: Option<i64>,
@@ -47,6 +51,9 @@ pub struct ScenarioUiState {
     // View controls
     pub hex_radius: f32,
     pub grid_padding: f32,
+
+    // Tile popup
+    pub tile_popup_open: bool,
 
     // Feedback
     pub last_error: Option<String>,
@@ -66,6 +73,10 @@ impl Default for ScenarioUiState {
             },
             selected_tile: None,
             paint_mode: PaintMode::Select,
+
+            drag_from_tile: None,
+            drag_payload: None,
+
             selected_unit_id: None,
             selected_item_id: None,
             cache_units: Vec::new(),
@@ -74,6 +85,7 @@ impl Default for ScenarioUiState {
             selected_load_scenario_id: None,
             hex_radius: 14.0,
             grid_padding: 12.0,
+            tile_popup_open: false,
             last_error: None,
             last_info: None,
         }
@@ -103,6 +115,18 @@ impl PaintMode {
 pub struct NamedScenario {
     pub id: i64,
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+struct UnitStats {
+    id: i64,
+    name: String,
+    strength: i32,
+    agility: i32,
+    focus: i32,
+    intelligence: i32,
+    charisma: i32,
+    knowledge: i32,
 }
 
 /// Render the Scenario Edit page.
@@ -233,6 +257,11 @@ pub fn render(
                         g
                     };
                     state.selected_tile = None;
+                    state.tile_popup_open = false;
+
+                    state.drag_from_tile = None;
+                    state.drag_payload = None;
+
                     state.last_info = Some("New scenario initialized.".to_string());
                 }
 
@@ -369,8 +398,12 @@ pub fn render(
                 rect.center().y - grid_px.y * 0.5,
             );
 
-            // Hit-test: if clicked inside rect, find nearest tile by scanning (simple and fine for 21x21)
-            if response.clicked() || response.dragged() {
+            // Hit-test: pick tile under pointer.
+            if response.clicked()
+                || response.dragged()
+                || response.drag_started()
+                || response.drag_stopped()
+            {
                 if let Some(pointer) = response.interact_pointer_pos() {
                     if let Some(hit) = pick_tile_by_point_pointy_top_odd_r(
                         origin,
@@ -379,26 +412,72 @@ pub fn render(
                         radius,
                         pointer,
                     ) {
-                        state.selected_tile = Some(hit);
+                        // Drag-and-drop (move occupant):
+                        //
+                        // - When a drag starts on a tile that has an occupant, we capture it as the payload.
+                        // - While dragging, we do not mutate the grid.
+                        // - On drag stop, if there is a payload:
+                        //     - drop onto hit tile: overwrite destination with payload
+                        //     - clear source tile (move)
+                        //
+                        // This is independent of paint_mode, but we only start a drag when an occupant exists.
+                        if response.drag_started() {
+                            if let Some(occ) = state.grid.get(hit).flatten() {
+                                state.drag_from_tile = Some(hit);
+                                state.drag_payload = Some(occ);
+                                state.tile_popup_open = false; // avoid popup fighting with drag
+                            }
+                        }
 
-                        match state.paint_mode {
-                            PaintMode::Select => {}
-                            PaintMode::PlaceUnit => {
-                                if let Some(uid) = state.selected_unit_id {
-                                    state.grid.set(hit, Some(TileOccupant::Unit(uid)));
-                                } else {
-                                    state.last_error = Some("Select a Unit first".to_string());
+                        if response.drag_stopped() {
+                            if let (Some(from), Some(payload)) =
+                                (state.drag_from_tile, state.drag_payload)
+                            {
+                                // If the user releases on a valid tile, move the payload there.
+                                // If released back on the same tile, this is effectively a no-op.
+                                state.grid.set(hit, Some(payload));
+                                if hit != from {
+                                    state.grid.clear(from);
                                 }
+                                state.selected_tile = Some(hit);
                             }
-                            PaintMode::PlaceItem => {
-                                if let Some(iid) = state.selected_item_id {
-                                    state.grid.set(hit, Some(TileOccupant::Item(iid)));
-                                } else {
-                                    state.last_error = Some("Select an Item first".to_string());
+                            state.drag_from_tile = None;
+                            state.drag_payload = None;
+                        }
+
+                        // If we're currently dragging a payload, don't apply paint-mode actions.
+                        let is_dragging_payload = state.drag_payload.is_some();
+                        if !is_dragging_payload {
+                            state.selected_tile = Some(hit);
+
+                            match state.paint_mode {
+                                PaintMode::Select => {
+                                    state.tile_popup_open = true;
                                 }
-                            }
-                            PaintMode::Erase => {
-                                state.grid.clear(hit);
+                                PaintMode::PlaceUnit => {
+                                    if let Some(uid) = state.selected_unit_id {
+                                        // Default placement: not NPB. You can toggle NPB via the tile popup.
+                                        state.grid.set(
+                                            hit,
+                                            Some(TileOccupant::Unit(UnitPlacement::new(uid, false))),
+                                        );
+                                        state.tile_popup_open = true;
+                                    } else {
+                                        state.last_error = Some("Select a Unit first".to_string());
+                                    }
+                                }
+                                PaintMode::PlaceItem => {
+                                    if let Some(iid) = state.selected_item_id {
+                                        state.grid.set(hit, Some(TileOccupant::Item(iid)));
+                                        state.tile_popup_open = true;
+                                    } else {
+                                        state.last_error = Some("Select an Item first".to_string());
+                                    }
+                                }
+                                PaintMode::Erase => {
+                                    state.grid.clear(hit);
+                                    state.tile_popup_open = false;
+                                }
                             }
                         }
                     }
@@ -419,9 +498,19 @@ pub fn render(
                     // Occupant icon
                     if let Some(occ) = state.grid.get(c).flatten() {
                         match occ {
-                            TileOccupant::Unit(_uid) => draw_person_icon(&painter, center, radius),
+                            TileOccupant::Unit(_p) => draw_person_icon(&painter, center, radius),
                             TileOccupant::Item(_iid) => draw_item_icon(&painter, center, radius),
                         }
+                    }
+                }
+            }
+
+            // While dragging, show a ghosted icon under the cursor to indicate payload.
+            if let Some(payload) = state.drag_payload {
+                if let Some(pointer) = ui.ctx().pointer_latest_pos() {
+                    match payload {
+                        TileOccupant::Unit(_p) => draw_person_icon(&painter, pointer, radius),
+                        TileOccupant::Item(_iid) => draw_item_icon(&painter, pointer, radius),
                     }
                 }
             }
@@ -430,6 +519,116 @@ pub fn render(
             ui.weak("Border: subtle outline. Occupants: person/item glyphs.");
         });
     });
+
+    // Tile popup (NPB toggle, unit stats, remove unit)
+    if state.tile_popup_open {
+        if let Some(tile) = state.selected_tile {
+            let mut open = true;
+            egui::Window::new(format!("Tile ({}, {})", tile.q, tile.r))
+                .open(&mut open)
+                .resizable(true)
+                .collapsible(true)
+                .show(ui.ctx(), |ui| {
+                    ui.label("Occupant");
+                    ui.add_space(6.0);
+
+                    let occ = state.grid.get(tile).flatten();
+                    match occ {
+                        None => {
+                            ui.weak("Empty");
+                            ui.add_space(8.0);
+                            ui.label("Tip: Use Place Unit / Place Item modes to add occupants.");
+                        }
+                        Some(TileOccupant::Item(iid)) => {
+                            ui.label(format!("Item id: {}", iid));
+                            ui.add_space(8.0);
+                            if ui.button("Remove Item from Scenario").clicked() {
+                                state.grid.clear(tile);
+                                state.last_info = Some("Item removed from tile.".to_string());
+                            }
+                        }
+                        Some(TileOccupant::Unit(p)) => {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Unit id: {}", p.unit_id));
+                                ui.separator();
+                                ui.label(format!("NPB: {}", if p.is_npb { "Yes" } else { "No" }));
+                            });
+
+                            ui.add_space(8.0);
+
+                            let mut is_npb = p.is_npb;
+                            if ui.checkbox(&mut is_npb, "Tag as NPB (Non-Player Behavior)").changed() {
+                                state.grid.set(tile, Some(TileOccupant::Unit(UnitPlacement::new(p.unit_id, is_npb))));
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(10.0);
+
+                            ui.label("Unit Stats");
+                            match db_unit_get_stats(db, p.unit_id) {
+                                Ok(stats) => {
+                                    egui::Grid::new("unit_stats_grid")
+                                        .striped(true)
+                                        .min_col_width(80.0)
+                                        .show(ui, |ui| {
+                                            ui.strong("Name");
+                                            ui.label(stats.name);
+                                            ui.end_row();
+
+                                            ui.strong("Strength");
+                                            ui.label(stats.strength.to_string());
+                                            ui.end_row();
+
+                                            ui.strong("Agility");
+                                            ui.label(stats.agility.to_string());
+                                            ui.end_row();
+
+                                            ui.strong("Focus");
+                                            ui.label(stats.focus.to_string());
+                                            ui.end_row();
+
+                                            ui.strong("Intelligence");
+                                            ui.label(stats.intelligence.to_string());
+                                            ui.end_row();
+
+                                            ui.strong("Charisma");
+                                            ui.label(stats.charisma.to_string());
+                                            ui.end_row();
+
+                                            ui.strong("Knowledge");
+                                            ui.label(stats.knowledge.to_string());
+                                            ui.end_row();
+                                        });
+
+                                    ui.add_space(6.0);
+                                    ui.weak("NPB units will follow any behaviors defined for them in the database (coming next in Simulation).");
+                                }
+                                Err(e) => {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(220, 80, 80),
+                                        format!("Failed to load unit stats: {e:#}"),
+                                    );
+                                }
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(10.0);
+
+                            if ui.button("Remove Unit from Scenario").clicked() {
+                                state.grid.clear(tile);
+                                state.last_info = Some("Unit removed from tile.".to_string());
+                            }
+                        }
+                    }
+                });
+
+            state.tile_popup_open = open;
+        } else {
+            state.tile_popup_open = false;
+        }
+    }
 }
 
 /* ----------------------------- Drawing helpers ----------------------------- */
@@ -685,7 +884,7 @@ fn load_scenario(db: &DbState, scenario_id: i64) -> Result<LoadedScenario> {
     // Load tile occupants (only rows that exist). Missing tiles are empty.
     let mut stmt = conn.prepare(
         r#"
-        SELECT q, r, unit_id, item_id
+        SELECT q, r, unit_id, item_id, grid_unit_is_npb
         FROM GridTile
         WHERE grid_id = ?1
         "#,
@@ -697,14 +896,15 @@ fn load_scenario(db: &DbState, scenario_id: i64) -> Result<LoadedScenario> {
             let r: i32 = row.get(1)?;
             let unit_id: Option<i64> = row.get(2)?;
             let item_id: Option<i64> = row.get(3)?;
-            Ok((q, r, unit_id, item_id))
+            let is_npb_i: i32 = row.get(4)?;
+            Ok((q, r, unit_id, item_id, is_npb_i != 0))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    for (q, r, unit_id, item_id) in tiles {
+    for (q, r, unit_id, item_id, is_npb) in tiles {
         let c = AxialCoord::new(q, r);
         let occ = match (unit_id, item_id) {
-            (Some(uid), None) => Some(TileOccupant::Unit(uid)),
+            (Some(uid), None) => Some(TileOccupant::Unit(UnitPlacement::new(uid, is_npb))),
             (None, Some(iid)) => Some(TileOccupant::Item(iid)),
             _ => None,
         };
@@ -777,22 +977,22 @@ fn save_scenario_and_grid(db: &DbState, state: &mut ScenarioUiState) -> Result<(
         for q in 0..state.grid.width {
             let c = AxialCoord::new(q, r);
             if let Some(occ) = state.grid.get(c).flatten() {
-                let (unit_id, item_id) = match occ {
-                    TileOccupant::Unit(uid) => (Some(uid), None),
-                    TileOccupant::Item(iid) => (None, Some(iid)),
+                let (unit_id, item_id, unit_is_npb) = match occ {
+                    TileOccupant::Unit(p) => (Some(p.unit_id), None, if p.is_npb { 1 } else { 0 }),
+                    TileOccupant::Item(iid) => (None, Some(iid), 0),
                 };
 
                 tx.execute(
                     r#"
                     INSERT INTO GridTile (
-                        grid_id, q, r, unit_id, item_id, created_at, updated_at
+                        grid_id, q, r, unit_id, item_id, grid_unit_is_npb, created_at, updated_at
                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5,
+                        ?1, ?2, ?3, ?4, ?5, ?6,
                         strftime('%Y-%m-%dT%H:%M:%fZ','now'),
                         strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     )
                     "#,
-                    params![grid_id, q, r, unit_id, item_id],
+                    params![grid_id, q, r, unit_id, item_id, unit_is_npb],
                 )?;
             }
         }
@@ -842,4 +1042,42 @@ fn save_scenario_and_grid(db: &DbState, state: &mut ScenarioUiState) -> Result<(
     tx.commit()?;
 
     Ok((scenario_id, grid_id))
+}
+
+fn db_unit_get_stats(db: &DbState, unit_id: i64) -> Result<UnitStats> {
+    let mut conn_guard = db.conn.lock().expect("db conn mutex poisoned");
+    let conn = conn_guard
+        .as_mut()
+        .context("SQLite connection is not available")?;
+
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+          id,
+          name,
+          strength,
+          agility,
+          focus,
+          intelligence,
+          charisma,
+          knowledge
+        FROM Unit
+        WHERE id = ?1
+        "#,
+    )?;
+
+    let stats = stmt.query_row(params![unit_id], |row| {
+        Ok(UnitStats {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            strength: row.get(2)?,
+            agility: row.get(3)?,
+            focus: row.get(4)?,
+            intelligence: row.get(5)?,
+            charisma: row.get(6)?,
+            knowledge: row.get(7)?,
+        })
+    })?;
+
+    Ok(stats)
 }
