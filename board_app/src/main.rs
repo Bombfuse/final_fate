@@ -4,9 +4,10 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 
 use bevy::sprite::{MaterialMesh2dBundle, Mesh2dHandle};
 use bevy_egui::{EguiContexts, EguiPlugin, egui};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::{fs, io};
 
 fn main() {
     App::new()
@@ -58,6 +59,18 @@ struct AppRoute {
     current: Route,
 }
 
+#[derive(Resource, Default)]
+struct UnitUiState {
+    new_name: String,
+    new_strength: i32,
+    new_agility: i32,
+    new_focus: i32,
+    new_intelligence: i32,
+    new_charisma: i32,
+    new_knowledge: i32,
+    last_error: Option<String>,
+}
+
 /* ---------------------------- Database State ---------------------------- */
 
 #[derive(Clone, Resource)]
@@ -87,6 +100,7 @@ impl Default for DbStatus {
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
     commands.insert_resource(AppRoute::default());
+    commands.insert_resource(UnitUiState::default());
 }
 
 /// Boots up and makes a connection to SQLite immediately.
@@ -102,21 +116,13 @@ fn connect_sqlite_on_boot(mut commands: Commands) {
 
     // Connect immediately
     let connect_result = (|| -> Result<()> {
-        let conn = Connection::open(&db_path)
+        let mut conn = Connection::open(&db_path)
             .with_context(|| format!("Failed to open SQLite database at {}", db_path.display()))?;
 
-        // Ensure at least one table exists so CRUD has something to target.
-        // This is a minimal placeholder schema for now.
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys = ON;
-
-            CREATE TABLE IF NOT EXISTS app_kv (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            "#,
-        )?;
+        // Run migrations on startup (single source of truth for schema).
+        // This expects the repo migration files at `../migrations/*.sql` relative to this crate.
+        run_sql_migrations(&mut conn, PathBuf::from("../migrations"))
+            .context("Failed to run SQL migrations on startup")?;
 
         // Store connection
         *state.conn.lock().expect("db conn mutex poisoned") = Some(conn);
@@ -198,6 +204,7 @@ fn ui_router_system(
     mut contexts: EguiContexts,
     mut route: ResMut<AppRoute>,
     db: Option<Res<DbState>>,
+    mut unit_ui: ResMut<UnitUiState>,
 ) {
     // Top-left main panel for pages
     egui::TopBottomPanel::top("top_bar").show(contexts.ctx_mut(), |ui| {
@@ -263,7 +270,7 @@ fn ui_router_system(
             empty_page(ui, &mut route, "Scenario Edit");
         }
         Route::UnitEdit => {
-            empty_page(ui, &mut route, "Unit Edit");
+            unit_edit_page(ui, &mut route, db.as_deref(), &mut unit_ui);
         }
         Route::ItemEdit => {
             empty_page(ui, &mut route, "Item Edit");
@@ -284,6 +291,240 @@ fn empty_page(ui: &mut egui::Ui, route: &mut AppRoute, title: &str) {
             route.current = Route::MainMenu;
         }
     });
+}
+
+fn run_sql_migrations(conn: &mut Connection, migrations_dir: PathBuf) -> Result<()> {
+    // Minimal migration runner:
+    // - Ensures a schema_migrations table exists
+    // - Applies each `*.sql` file in lexical order once
+    // - Stores the filename as the migration id
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        "#,
+    )?;
+
+    let mut entries: Vec<_> = fs::read_dir(&migrations_dir)
+        .with_context(|| {
+            format!(
+                "Failed to read migrations dir: {}",
+                migrations_dir.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, io::Error>>()?;
+
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("sql") {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let id = file_name.to_string_lossy().to_string();
+
+        let already_applied: Option<String> = conn
+            .query_row(
+                "SELECT id FROM schema_migrations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if already_applied.is_some() {
+            continue;
+        }
+
+        let sql = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read migration file: {}", path.display()))?;
+
+        // Apply within a transaction for safety.
+        let tx = conn.transaction()?;
+        tx.execute_batch(&sql)
+            .with_context(|| format!("Migration failed: {} (from {})", id, path.display()))?;
+        tx.execute(
+            "INSERT INTO schema_migrations (id) VALUES (?1)",
+            params![id],
+        )?;
+        tx.commit()?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct UnitRow {
+    id: i64,
+    name: String,
+    strength: i32,
+    agility: i32,
+    focus: i32,
+    intelligence: i32,
+    charisma: i32,
+    knowledge: i32,
+}
+
+fn unit_edit_page(
+    ui: &mut egui::Ui,
+    route: &mut AppRoute,
+    db: Option<&DbState>,
+    unit_ui: &mut UnitUiState,
+) {
+    ui.heading("Unit Edit");
+    ui.add_space(8.0);
+
+    if ui.button("Back to Main Menu").clicked() {
+        route.current = Route::MainMenu;
+        return;
+    }
+
+    ui.add_space(12.0);
+
+    if let Some(err) = unit_ui.last_error.clone() {
+        ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+        ui.add_space(8.0);
+    }
+
+    // Create new unit form
+    ui.group(|ui| {
+        ui.label("Create Unit");
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut unit_ui.new_name);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("STR");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_strength).clamp_range(0..=999));
+            ui.label("AGI");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_agility).clamp_range(0..=999));
+            ui.label("FOC");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_focus).clamp_range(0..=999));
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("INT");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_intelligence).clamp_range(0..=999));
+            ui.label("CHA");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_charisma).clamp_range(0..=999));
+            ui.label("KNO");
+            ui.add(egui::DragValue::new(&mut unit_ui.new_knowledge).clamp_range(0..=999));
+        });
+
+        let can_create = !unit_ui.new_name.trim().is_empty();
+        if ui
+            .add_enabled(can_create, egui::Button::new("Create"))
+            .clicked()
+        {
+            unit_ui.last_error = None;
+            if let Some(db) = db {
+                match db_unit_insert(
+                    db,
+                    unit_ui.new_name.trim(),
+                    unit_ui.new_strength,
+                    unit_ui.new_agility,
+                    unit_ui.new_focus,
+                    unit_ui.new_intelligence,
+                    unit_ui.new_charisma,
+                    unit_ui.new_knowledge,
+                ) {
+                    Ok(_) => {
+                        unit_ui.new_name.clear();
+                        unit_ui.new_strength = 0;
+                        unit_ui.new_agility = 0;
+                        unit_ui.new_focus = 0;
+                        unit_ui.new_intelligence = 0;
+                        unit_ui.new_charisma = 0;
+                        unit_ui.new_knowledge = 0;
+                    }
+                    Err(e) => {
+                        unit_ui.last_error = Some(format!("Create failed: {e:#}"));
+                    }
+                }
+            } else {
+                unit_ui.last_error = Some("DB is not available".to_string());
+            }
+        }
+    });
+
+    ui.add_space(12.0);
+
+    // List units in a table
+    let units = match db {
+        Some(db) => match db_unit_list(db) {
+            Ok(rows) => rows,
+            Err(e) => {
+                unit_ui.last_error = Some(format!("List failed: {e:#}"));
+                Vec::new()
+            }
+        },
+        None => {
+            unit_ui.last_error = Some("DB is not available".to_string());
+            Vec::new()
+        }
+    };
+
+    ui.label(format!("Units: {}", units.len()));
+    ui.add_space(6.0);
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            egui::Grid::new("unit_table")
+                .striped(true)
+                .min_col_width(60.0)
+                .show(ui, |ui| {
+                    ui.strong("ID");
+                    ui.strong("Name");
+                    ui.strong("STR");
+                    ui.strong("AGI");
+                    ui.strong("FOC");
+                    ui.strong("INT");
+                    ui.strong("CHA");
+                    ui.strong("KNO");
+                    ui.strong("Actions");
+                    ui.end_row();
+
+                    for u in units {
+                        ui.label(u.id.to_string());
+                        ui.label(u.name);
+                        ui.label(u.strength.to_string());
+                        ui.label(u.agility.to_string());
+                        ui.label(u.focus.to_string());
+                        ui.label(u.intelligence.to_string());
+                        ui.label(u.charisma.to_string());
+                        ui.label(u.knowledge.to_string());
+
+                        let mut delete_clicked = false;
+                        ui.horizontal(|ui| {
+                            if ui.button("Delete").clicked() {
+                                delete_clicked = true;
+                            }
+                        });
+
+                        ui.end_row();
+
+                        if delete_clicked {
+                            unit_ui.last_error = None;
+                            if let Some(db) = db {
+                                if let Err(e) = db_unit_delete(db, u.id) {
+                                    unit_ui.last_error = Some(format!("Delete failed: {e:#}"));
+                                }
+                            } else {
+                                unit_ui.last_error = Some("DB is not available".to_string());
+                            }
+                        }
+                    }
+                });
+        });
 }
 
 /* --------------------- Bottom-left DB Connection Icon --------------------- */
@@ -360,7 +601,7 @@ fn user_input_system(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
-    db: Option<Res<DbState>>,
+    _db: Option<Res<DbState>>,
 ) {
     // Requirement: read user input (mouse, keyboard, etc)
     // Keyboard example: press Escape to quit
@@ -370,51 +611,102 @@ fn user_input_system(
         // Note: not emitting AppExit because not injected; leaving as placeholder.
     }
 
-    // Mouse example: left click prints world position and runs a tiny DB write/read/delete demo
+    // Mouse example: left click logs the world position (DB CRUD demo removed; schema is managed by migrations)
     if mouse.just_pressed(MouseButton::Left) {
         if let (Ok(window), Ok((camera, cam_transform))) =
             (windows.get_single(), camera_q.get_single())
         {
             if let Some(cursor) = window.cursor_position() {
                 if let Some(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
-                    // Minimal DB CRUD demonstration:
-                    if let Some(db) = db.as_ref() {
-                        let _ = db_kv_roundtrip(
-                            db,
-                            "last_click_world",
-                            &format!("{},{}", world.x, world.y),
-                        );
-                    }
+                    let _ = (world.x, world.y);
                 }
             }
         }
     }
 }
 
-/// Demonstrates read/write/delete with SQLite.
-/// Returns errors through anyhow for logging/inspection (but we swallow it in input handler).
-fn db_kv_roundtrip(db: &DbState, key: &str, value: &str) -> Result<()> {
+fn db_unit_list(db: &DbState) -> Result<Vec<UnitRow>> {
     let mut conn_guard = db.conn.lock().expect("db conn mutex poisoned");
     let conn = conn_guard
         .as_mut()
         .context("SQLite connection is not available")?;
 
-    // Write
-    conn.execute(
-        "INSERT INTO app_kv (key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, value),
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+          id, name, strength, agility, focus, intelligence, charisma, knowledge
+        FROM Unit
+        ORDER BY name ASC, id ASC
+        "#,
     )?;
 
-    // Read
-    let read_value: String =
-        conn.query_row("SELECT value FROM app_kv WHERE key = ?1", (key,), |row| {
-            row.get(0)
-        })?;
-    let _ = read_value;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(UnitRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                strength: row.get(2)?,
+                agility: row.get(3)?,
+                focus: row.get(4)?,
+                intelligence: row.get(5)?,
+                charisma: row.get(6)?,
+                knowledge: row.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    // Delete (for demonstration; remove if you want it persisted)
-    conn.execute("DELETE FROM app_kv WHERE key = ?1", (key,))?;
+    Ok(rows)
+}
+
+fn db_unit_insert(
+    db: &DbState,
+    name: &str,
+    strength: i32,
+    agility: i32,
+    focus: i32,
+    intelligence: i32,
+    charisma: i32,
+    knowledge: i32,
+) -> Result<i64> {
+    let mut conn_guard = db.conn.lock().expect("db conn mutex poisoned");
+    let conn = conn_guard
+        .as_mut()
+        .context("SQLite connection is not available")?;
+
+    conn.execute(
+        r#"
+        INSERT INTO Unit (name, strength, agility, focus, intelligence, charisma, knowledge)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            name,
+            strength,
+            agility,
+            focus,
+            intelligence,
+            charisma,
+            knowledge
+        ],
+    )?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+fn db_unit_delete(db: &DbState, id: i64) -> Result<()> {
+    let mut conn_guard = db.conn.lock().expect("db conn mutex poisoned");
+    let conn = conn_guard
+        .as_mut()
+        .context("SQLite connection is not available")?;
+
+    let changes = conn.execute("DELETE FROM Unit WHERE id = ?1", params![id])?;
+    if changes == 0 {
+        // Not an error for UI purposes, but useful feedback.
+        let _ = conn
+            .query_row("SELECT id FROM Unit WHERE id = ?1", params![id], |_row| {
+                Ok(())
+            })
+            .optional()?;
+    }
 
     Ok(())
 }
