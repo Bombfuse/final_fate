@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use db::migrations::run_sql_migrations;
+use pages::action_edit::ActionUiState;
 use pages::item_edit::ItemUiState;
 use pages::level_edit::LevelUiState;
 use pages::unit_edit::UnitUiState;
@@ -54,6 +55,7 @@ enum Route {
     UnitEdit,
     ItemEdit,
     LevelEdit,
+    ActionEdit,
     Simulation,
 }
 
@@ -100,6 +102,7 @@ fn setup_camera(mut commands: Commands) {
     commands.insert_resource(UnitUiState::default());
     commands.insert_resource(ItemUiState::default());
     commands.insert_resource(LevelUiState::default());
+    commands.insert_resource(ActionUiState::default());
 }
 
 /// Boots up and makes a connection to SQLite immediately.
@@ -206,6 +209,7 @@ fn ui_router_system(
     mut unit_ui: ResMut<UnitUiState>,
     mut item_ui: ResMut<ItemUiState>,
     mut level_ui: ResMut<LevelUiState>,
+    mut action_ui: ResMut<ActionUiState>,
 ) {
     // Top-left main panel for pages
     egui::TopBottomPanel::top("top_bar").show(contexts.ctx_mut(), |ui| {
@@ -218,6 +222,7 @@ fn ui_router_system(
                 Route::UnitEdit => "Unit Edit",
                 Route::ItemEdit => "Item Edit",
                 Route::LevelEdit => "Level Edit",
+                Route::ActionEdit => "Action Edit",
                 Route::Simulation => "Simulation",
             });
 
@@ -263,6 +268,9 @@ fn ui_router_system(
                 if ui.button("Level Edit").clicked() {
                     route.current = Route::LevelEdit;
                 }
+                if ui.button("Action Edit").clicked() {
+                    route.current = Route::ActionEdit;
+                }
                 if ui.button("Simulation").clicked() {
                     route.current = Route::Simulation;
                 }
@@ -282,6 +290,9 @@ fn ui_router_system(
         }
         Route::LevelEdit => {
             pages::level_edit::render(ui, &mut route, db.as_deref(), level_ui.as_mut());
+        }
+        Route::ActionEdit => {
+            pages::action_edit::render(ui, &mut route, db.as_deref(), action_ui.as_mut());
         }
         Route::Simulation => {
             pages::empty::render(ui, &mut route, "Simulation");

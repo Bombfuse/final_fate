@@ -2,6 +2,7 @@
 //!
 //! Each page exposes a `render(...)` function that draws its UI into an egui `Ui`.
 
+pub mod action_edit;
 pub mod empty;
 pub mod item_edit;
 pub mod level_edit;
