@@ -1,0 +1,11 @@
+[package]
+name = "board_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.14", features = ["png"] }
+bevy_egui = "0.28"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
