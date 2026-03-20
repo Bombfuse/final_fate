@@ -4,6 +4,7 @@
 
 pub mod empty;
 pub mod item_edit;
+pub mod level_edit;
 pub mod unit_edit;
 
 // Future pages:

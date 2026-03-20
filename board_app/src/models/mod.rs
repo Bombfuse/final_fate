@@ -5,6 +5,7 @@
 //! adapters until fully refactored).
 
 pub mod item;
+pub mod level;
 pub mod unit;
 
 // Future models:
