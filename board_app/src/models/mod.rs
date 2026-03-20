@@ -7,8 +7,8 @@
 pub mod action;
 pub mod item;
 pub mod level;
+pub mod scenario;
 pub mod unit;
 
 // Future models:
-// pub mod scenario;
 // pub mod campaign;
