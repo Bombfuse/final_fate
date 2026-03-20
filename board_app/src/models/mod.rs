@@ -4,9 +4,9 @@
 //! Database access/query code should live in `crate::db` (or page-specific
 //! adapters until fully refactored).
 
+pub mod item;
 pub mod unit;
 
 // Future models:
 // pub mod scenario;
-// pub mod item;
 // pub mod campaign;

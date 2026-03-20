@@ -12,13 +12,14 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 /// Apply any migrations that have not yet been applied.
 ///
 /// This creates a `schema_migrations` table if necessary, then:
-/// - scans `migrations_dir` for `*.sql` files
+/// - resolves `migrations_dir` against multiple candidate locations
+/// - scans for `*.sql` files
 /// - sorts by filename
 /// - applies each file once (tracked by filename in `schema_migrations`)
 pub fn run_sql_migrations(conn: &mut Connection, migrations_dir: PathBuf) -> Result<()> {
@@ -33,13 +34,15 @@ pub fn run_sql_migrations(conn: &mut Connection, migrations_dir: PathBuf) -> Res
         "#,
     )?;
 
-    let mut entries: Vec<_> = fs::read_dir(&migrations_dir)
-        .with_context(|| {
-            format!(
-                "Failed to read migrations dir: {}",
-                migrations_dir.display()
-            )
-        })?
+    let resolved_dir = resolve_migrations_dir(&migrations_dir).with_context(|| {
+        format!(
+            "Failed to resolve migrations dir from: {}",
+            migrations_dir.display()
+        )
+    })?;
+
+    let mut entries: Vec<_> = fs::read_dir(&resolved_dir)
+        .with_context(|| format!("Failed to read migrations dir: {}", resolved_dir.display()))?
         .collect::<std::result::Result<Vec<_>, io::Error>>()?;
 
     entries.sort_by_key(|e| e.file_name());
@@ -81,4 +84,55 @@ pub fn run_sql_migrations(conn: &mut Connection, migrations_dir: PathBuf) -> Res
     }
 
     Ok(())
+}
+
+/// Resolve a migrations directory robustly by trying multiple candidate paths.
+///
+/// Why: the app may be launched from different working directories (IDE, `cargo run`,
+/// double-clicked binary, etc.). The input path might be relative to the crate root
+/// (as used in code), or relative to the process working directory.
+///
+/// Strategy:
+/// - If the provided path exists, use it.
+/// - Else, try resolving it relative to the current working directory.
+/// - Else, try common repo-relative fallbacks.
+fn resolve_migrations_dir(input: &Path) -> Result<PathBuf> {
+    // 1) As provided (may already be absolute or correct relative to CWD).
+    if input.is_dir() {
+        return Ok(input.to_path_buf());
+    }
+
+    // 2) Relative to current working directory.
+    let cwd = std::env::current_dir().context("Failed to read current working directory")?;
+    let cwd_joined = cwd.join(input);
+    if cwd_joined.is_dir() {
+        return Ok(cwd_joined);
+    }
+
+    // 3) Common fallbacks when running from repo root or from the crate dir.
+    //    These keep behavior stable without hardcoding an absolute path.
+    let candidates = [
+        PathBuf::from("migrations"),
+        PathBuf::from("../migrations"),
+        PathBuf::from("../../migrations"),
+        PathBuf::from("final_fate/migrations"),
+        PathBuf::from("../final_fate/migrations"),
+    ];
+
+    for cand in candidates {
+        if cand.is_dir() {
+            return Ok(cand);
+        }
+        let joined = cwd.join(&cand);
+        if joined.is_dir() {
+            return Ok(joined);
+        }
+    }
+
+    anyhow::bail!(
+        "Migrations directory not found. Tried: {}, {}, plus fallbacks relative to CWD {}",
+        input.display(),
+        cwd_joined.display(),
+        cwd.display()
+    );
 }

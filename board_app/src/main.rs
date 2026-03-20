@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use db::migrations::run_sql_migrations;
+use pages::item_edit::ItemUiState;
 use pages::unit_edit::UnitUiState;
 
 fn main() {
@@ -95,6 +96,7 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
     commands.insert_resource(AppRoute::default());
     commands.insert_resource(UnitUiState::default());
+    commands.insert_resource(ItemUiState::default());
 }
 
 /// Boots up and makes a connection to SQLite immediately.
@@ -199,6 +201,7 @@ fn ui_router_system(
     mut route: ResMut<AppRoute>,
     db: Option<Res<DbState>>,
     mut unit_ui: ResMut<UnitUiState>,
+    mut item_ui: ResMut<ItemUiState>,
 ) {
     // Top-left main panel for pages
     egui::TopBottomPanel::top("top_bar").show(contexts.ctx_mut(), |ui| {
@@ -267,7 +270,7 @@ fn ui_router_system(
             pages::unit_edit::render(ui, &mut route, db.as_deref(), unit_ui.as_mut());
         }
         Route::ItemEdit => {
-            pages::empty::render(ui, &mut route, "Item Edit");
+            pages::item_edit::render(ui, &mut route, db.as_deref(), item_ui.as_mut());
         }
         Route::Simulation => {
             pages::empty::render(ui, &mut route, "Simulation");
